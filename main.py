@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, UploadFile
 import cv2
 import numpy as np
-from mediapipe.python.solutions import face_mesh as mp_face_mesh
+import mediapipe.solutions.face_mesh as mp_face_mesh
 
 app = FastAPI()
 
