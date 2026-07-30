@@ -1,10 +1,9 @@
 from fastapi import FastAPI, File, UploadFile
 import cv2
 import numpy as np
-import mediapipe as mp
+from mediapipe.python.solutions import face_mesh as mp_face_mesh
 
 app = FastAPI()
-mp_face_mesh = mp.solutions.face_mesh
 
 @app.get("/")
 def home():
