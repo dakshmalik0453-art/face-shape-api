@@ -1,120 +1,92 @@
-from fastapi import FastAPI, File, UploadFile, Form
-from fastapi.responses import Response
 import cv2
-import numpy as np
 import mediapipe as mp
-import urllib.request
+import numpy as np
 import math
 
-app = FastAPI()
 mp_face_mesh = mp.solutions.face_mesh
 
-@app.get("/")
-def home():
-    return {"message": "Face Shape & 3D Avatar API is Live!"}
+def calculate_distance(p1, p2):
+    """Do landmarks ke beech Euclidean distance calculate karta hai"""
+    return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
 
-def get_image_from_input(file: UploadFile = None, url: str = None):
-    img = None
-    if file is not None and file.filename != "":
-        contents = file.file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    elif url is not None and url.strip() != "":
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            response = urllib.request.urlopen(req)
-            arr = np.asarray(bytearray(response.read()), dtype=np.uint8)
-            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        except Exception:
-            pass
-    return img
+def analyze_face_shape(image_path_or_bytes):
+    # Image load karein (OpenCV format)
+    image = cv2.imread(image_path_or_bytes)
+    h, w, _ = image.shape
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-# ==========================================
-# FEATURE 1: Face Shape Detection (Old & Working)
-# ==========================================
-@app.post("/detect")
-async def detect_face(file: UploadFile = File(None), url: str = Form(None)):
-    img = get_image_from_input(file, url)
-    if img is None:
-        return {"status": "error", "message": "Invalid Image or URL"}
+    with mp_face_mesh.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.5
+    ) as face_mesh:
+        results = face_mesh.process(image_rgb)
 
-    h, w, _ = img.shape
-    with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1) as face_mesh:
-        results = face_mesh.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         if not results.multi_face_landmarks:
-            return {"status": "error", "message": "No face found"}
+            return {"error": "No face detected"}
 
         landmarks = results.multi_face_landmarks[0].landmark
-        
-        p_forehead = (landmarks[10].x * w, landmarks[10].y * h)
-        p_chin = (landmarks[152].x * w, landmarks[152].y * h)
-        p_left_cheek = (landmarks[234].x * w, landmarks[234].y * h)
-        p_right_cheek = (landmarks[454].x * w, landmarks[454].y * h)
-        p_left_jaw = (landmarks[172].x * w, landmarks[172].y * h)
-        p_right_jaw = (landmarks[397].x * w, landmarks[397].y * h)
 
-        def get_dist(pt1, pt2):
-            return math.sqrt((pt1[0] - pt2[0])**2 + (pt1[1] - pt2[1])**2)
+        # Key Landmarks extract karein
+        top_forehead = landmarks[10]
+        bottom_chin = landmarks[152]
+        left_cheek = landmarks[234]
+        right_cheek = landmarks[454]
+        left_jaw = landmarks[58]
+        right_jaw = landmarks[288]
+        left_temple = landmarks[103]
+        right_temple = landmarks[332]
 
-        face_height = get_dist(p_forehead, p_chin)
-        face_width = get_dist(p_left_cheek, p_right_cheek)
-        jaw_width = get_dist(p_left_jaw, p_right_jaw)
+        # Measurements (relative distances)
+        face_length = calculate_distance(top_forehead, bottom_chin)
+        face_width = calculate_distance(left_cheek, right_cheek)
+        jaw_width = calculate_distance(left_jaw, right_jaw)
+        forehead_width = calculate_distance(left_temple, right_temple)
 
-        ratio = face_height / face_width if face_width > 0 else 1.0
+        # Ratios & Proportions
+        ratio = face_length / face_width if face_width > 0 else 1.0
+        jaw_to_cheek = jaw_width / face_width if face_width > 0 else 1.0
 
-        if ratio > 1.35:
-            shape = "Oblong"
-        elif abs(face_height - face_width) < face_width * 0.1:
-            shape = "Square" if abs(jaw_width - face_width) < face_width * 0.1 else "Round"
-        elif jaw_width < face_width * 0.8:
-            shape = "Heart / Diamond"
+        # Proportions formatted string (e.g., "1 : 1.4")
+        proportions_str = f"1 : {round(ratio, 1)}"
+
+        # Jawline Type detection
+        if jaw_to_cheek > 0.88:
+            jawline_type = "ANGULAR"
+        elif jaw_to_cheek > 0.78:
+            jawline_type = "STRUCTURED"
         else:
-            shape = "Oval"
+            jawline_type = "CURVED"
 
+        # Face Length Metric Display
+        length_val = f"{round(face_length * 10, 1)}"
+
+        # Face Shape Classification Logic
+        if ratio >= 1.35 and ratio <= 1.55 and jawline_type == "CURVED":
+            shape = "OVAL SHAPE"
+            description = "Your face length is slightly greater than width with softly curved lines."
+        elif ratio < 1.25 and jawline_type == "CURVED":
+            shape = "ROUND SHAPE"
+            description = "Your face width and length are almost equal with soft angles and full cheeks."
+        elif ratio < 1.30 and jawline_type in ["ANGULAR", "STRUCTURED"]:
+            shape = "SQUARE SHAPE"
+            description = "Your face has strong, sharp jawlines with equal width and length proportions."
+        elif ratio > 1.55:
+            shape = "OBLONG SHAPE"
+            description = "Your face is noticeably longer than it is wide with an elongated, balanced profile."
+        elif forehead_width > jaw_width and jawline_type == "CURVED":
+            shape = "HEART SHAPE"
+            description = "You have a broader forehead that gently tapers down into a delicate chin."
+        else:
+            shape = "DIAMOND SHAPE"
+            description = "Your cheekbones are the widest feature with a tapered forehead and jawline."
+
+        # Final Clean JSON Structure
         return {
-            "status": "success",
-            "face_shape": shape,
-            "face_height": round(face_height, 2),
-            "face_width": round(face_width, 2)
+            "detected_shape": shape,
+            "shape_description": description,
+            "face_proportions": proportions_str,
+            "jawline_type": jawline_type,
+            "face_length": length_val
         }
-
-# ==========================================
-# FEATURE 2: 3D Avatar Face Texture Extractor
-# ==========================================
-@app.post("/extract-texture")
-async def extract_texture(file: UploadFile = File(None), url: str = Form(None)):
-    img = get_image_from_input(file, url)
-    if img is None:
-        return {"status": "error", "message": "Invalid Image or URL"}
-
-    h, w, _ = img.shape
-    with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1) as face_mesh:
-        results = face_mesh.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        if not results.multi_face_landmarks:
-            return {"status": "error", "message": "No face found"}
-
-        landmarks = results.multi_face_landmarks[0].landmark
-        
-        x_coords = [int(lm.x * w) for lm in landmarks]
-        y_coords = [int(lm.y * h) for lm in landmarks]
-
-        min_x, max_x = max(0, min(x_coords)), min(w, max(x_coords))
-        min_y, max_y = max(0, min(y_coords)), min(h, max(y_coords))
-
-        box_w = max_x - min_x
-        box_h = max_y - min_y
-        pad = int(max(box_w, box_h) * 0.25)
-
-        cx, cy = (min_x + max_x) // 2, (min_y + max_y) // 2
-        size = max(box_w, box_h) // 2 + pad
-
-        x1 = max(0, cx - size)
-        y1 = max(0, cy - size)
-        x2 = min(w, cx + size)
-        y2 = min(h, cy + size)
-
-        face_crop = img[y1:y2, x1:x2]
-        face_resized = cv2.resize(face_crop, (512, 512), interpolation=cv2.INTER_AREA)
-
-        _, encoded_img = cv2.imencode('.png', face_resized)
-        return Response(content=encoded_img.tobytes(), media_type="image/png")
