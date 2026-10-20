@@ -1,14 +1,14 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import cv2
 import numpy as np
 import mediapipe as mp
 import math
+import urllib.request
 
-# 1. 'app' नाम से ही इनिशियलाइज़ होना चाहिए (Uvicorn इसे ही खोजता है)
 app = FastAPI()
 
-# CORS allow करें ताकि FlutterFlow से रिक्वेस्ट ब्लॉक न हो
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,18 +22,28 @@ mp_face_mesh = mp.solutions.face_mesh
 def calculate_distance(p1, p2):
     return math.sqrt((p1.x - p2.x)**2 + (p1.y - p2.y)**2)
 
+# FlutterFlow se aane wale JSON body ke liye schema
+class FaceAnalysisRequest(BaseModel):
+    image_url: str
+
 @app.get("/")
 def root():
     return {"status": "Face Analysis API is running!"}
 
 @app.post("/analyze-face")
-async def analyze_face(file: UploadFile = File(...)):
-    contents = await file.read()
-    nparr = np.frombuffer(contents, np.uint8)
-    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+async def analyze_face(req: FaceAnalysisRequest):
+    try:
+        # URL se image download karein
+        req_headers = {"User-Agent": "Mozilla/5.0"}
+        request_obj = urllib.request.Request(req.image_url, headers=req_headers)
+        with urllib.request.urlopen(request_obj) as response:
+            image_array = np.asarray(bytearray(response.read()), dtype=np.uint8)
+            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+    except Exception as e:
+        return {"error": f"Failed to download image from URL: {str(e)}"}
 
     if image is None:
-        return {"error": "Invalid image"}
+        return {"error": "Invalid image format"}
 
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
